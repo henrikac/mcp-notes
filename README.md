@@ -4,11 +4,29 @@ Knowledge Assistant is a small MCP server for working with local Markdown
 notes. It lets MCP clients such as Codex, Claude, and Gemini list notes, view
 individual notes, search through note titles and contents, and create new notes.
 
-Notes are stored as Markdown files in:
+## Storage
+
+By default, notes are stored as Markdown files in:
 
 ```text
 data/notes
 ```
+
+The server creates this directory on startup when no custom location is
+configured. Runtime note data is stored outside git, including the default
+`data/notes` directory and the local `data/storage.json` state file.
+
+To store notes somewhere else, set `KNOWLEDGE_ASSISTANT_NOTES_PATH` before
+starting the server:
+
+```bash
+KNOWLEDGE_ASSISTANT_NOTES_PATH="$HOME/Notes/knowledge-assistant" uv run python src/server.py
+```
+
+When the configured location changes later, the server moves existing note files
+from the previous location to the new one during startup. Existing files in the
+new location are not overwritten; moved files with duplicate names receive a
+numeric suffix.
 
 ## Tools
 
@@ -81,6 +99,14 @@ command: /path/to/knowledge-assistant/.venv/bin/python
 args: /path/to/knowledge-assistant/src/server.py
 ```
 
+For a custom notes directory, add the environment variable to your MCP client
+configuration:
+
+```text
+env:
+  KNOWLEDGE_ASSISTANT_NOTES_PATH: /path/to/notes
+```
+
 Remove the server later with:
 
 ```bash
@@ -90,7 +116,6 @@ codex mcp remove knowledge-assistant
 ## Project Structure
 
 ```text
-src/server.py   MCP server and tool definitions
-src/notes.py    Note storage, search, and creation logic
-data/notes      Markdown note files
+src/server.py MCP server and tool definitions
+src/notes.py  Note storage, search, and creation logic
 ```

@@ -1,17 +1,55 @@
+import json
+import os
+import shutil
 from pathlib import Path
 
 
-NOTES_PATH = Path(__file__).resolve().parent.parent / "data" / "notes"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_PATH = PROJECT_ROOT / "data"
+DEFAULT_NOTES_PATH = DATA_PATH / "notes"
+NOTES_PATH_ENV_VAR = "KNOWLEDGE_ASSISTANT_NOTES_PATH"
+STORAGE_STATE_PATH = DATA_PATH / "storage.json"
+NOTES_PATH = DEFAULT_NOTES_PATH
+_STORAGE_INITIALIZED = False
+
+
+def initialize_storage() -> Path:
+    """Initialize note storage and migrate notes if the configured path changed."""
+    global NOTES_PATH, _STORAGE_INITIALIZED
+
+    configured_path = os.environ.get(NOTES_PATH_ENV_VAR, "").strip()
+    desired_path = (
+        Path(configured_path).expanduser()
+        if configured_path
+        else DEFAULT_NOTES_PATH
+    ).resolve()
+
+    previous_path = read_previous_notes_path()
+    migration_source = previous_path if previous_path != desired_path else None
+
+    if migration_source is None and configured_path and DEFAULT_NOTES_PATH != desired_path:
+        migration_source = DEFAULT_NOTES_PATH
+
+    desired_path.mkdir(parents=True, exist_ok=True)
+
+    if migration_source is not None:
+        migrate_notes(migration_source, desired_path)
+
+    write_storage_state(desired_path)
+    NOTES_PATH = desired_path
+    _STORAGE_INITIALIZED = True
+    return NOTES_PATH
 
 
 def fetch_notes() -> list[dict[str, str | int]]:
     """Return ordered display metadata for all saved notes."""
+    ensure_storage()
     return [
         {
             "number": index,
             "title": normalize_file_name(file),
             "filename": file.name,
-            "path": str(file.relative_to(NOTES_PATH.parent.parent)),
+            "path": display_path(file),
         }
         for index, file in enumerate(note_files(), start=1)
     ]
@@ -19,6 +57,7 @@ def fetch_notes() -> list[dict[str, str | int]]:
 
 def search_notes(query: str) -> list[dict[str, str]]:
     """Search note titles and contents for a case-insensitive query."""
+    ensure_storage()
     normalized_query = query.strip().lower()
     if not normalized_query:
         return []
@@ -32,7 +71,7 @@ def search_notes(query: str) -> list[dict[str, str]]:
             results.append({
                 "title": title,
                 "filename": file.name,
-                "path": str(file.relative_to(NOTES_PATH.parent.parent)),
+                "path": display_path(file),
                 "excerpt": extract_excerpt(content, normalized_query),
             })
 
@@ -41,6 +80,7 @@ def search_notes(query: str) -> list[dict[str, str]]:
 
 def create_note(title: str, content: str) -> dict[str, str]:
     """Create a Markdown note and return its metadata."""
+    ensure_storage()
     normalized_title = title.strip()
     if not normalized_title:
         raise ValueError("Title cannot be empty.")
@@ -58,12 +98,13 @@ def create_note(title: str, content: str) -> dict[str, str]:
     return {
         "title": normalize_file_name(note_path),
         "filename": filename,
-        "path": str(note_path.relative_to(NOTES_PATH.parent.parent)),
+        "path": display_path(note_path),
     }
 
 
 def view_note(identifier: str) -> dict[str, str]:
     """Return a saved note's metadata and Markdown content."""
+    ensure_storage()
     normalized_identifier = identifier.strip()
     if not normalized_identifier:
         raise ValueError("Note identifier cannot be empty.")
@@ -75,7 +116,7 @@ def view_note(identifier: str) -> dict[str, str]:
     return {
         "title": normalize_file_name(note_path),
         "filename": note_path.name,
-        "path": str(note_path.relative_to(NOTES_PATH.parent.parent)),
+        "path": display_path(note_path),
         "content": note_path.read_text(encoding="utf-8"),
     }
 
@@ -114,6 +155,76 @@ def note_files() -> list[Path]:
         for file in sorted(NOTES_PATH.iterdir())
         if file.is_file() and not file.name.startswith(".")
     ]
+
+
+def ensure_storage() -> None:
+    """Create default storage for direct module use before server startup."""
+    if not _STORAGE_INITIALIZED:
+        initialize_storage()
+
+
+def read_previous_notes_path() -> Path | None:
+    """Read the last active notes path from internal server state."""
+    if not STORAGE_STATE_PATH.exists():
+        return None
+
+    try:
+        state = json.loads(STORAGE_STATE_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+    notes_path = state.get("notes_path")
+    if not isinstance(notes_path, str) or not notes_path.strip():
+        return None
+
+    return Path(notes_path).expanduser().resolve()
+
+
+def write_storage_state(notes_path: Path) -> None:
+    """Persist the active notes path so future starts can migrate from it."""
+    DATA_PATH.mkdir(parents=True, exist_ok=True)
+    STORAGE_STATE_PATH.write_text(
+        json.dumps({"notes_path": str(notes_path)}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def migrate_notes(source_path: Path, target_path: Path) -> None:
+    """Move existing note files from source to target without overwriting."""
+    if not source_path.exists() or source_path == target_path:
+        return
+
+    target_path.mkdir(parents=True, exist_ok=True)
+
+    for source_file in sorted(source_path.iterdir()):
+        if not source_file.is_file() or source_file.name.startswith("."):
+            continue
+
+        target_file = unique_target_path(target_path / source_file.name)
+        shutil.move(str(source_file), str(target_file))
+
+
+def unique_target_path(target_file: Path) -> Path:
+    """Return a non-existing path, preserving existing target files."""
+    if not target_file.exists():
+        return target_file
+
+    index = 2
+    while True:
+        candidate = target_file.with_name(
+            f"{target_file.stem}-{index}{target_file.suffix}"
+        )
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def display_path(file: Path) -> str:
+    """Return project-relative paths when possible, otherwise absolute paths."""
+    resolved_file = file.resolve()
+    if resolved_file.is_relative_to(PROJECT_ROOT):
+        return str(resolved_file.relative_to(PROJECT_ROOT))
+    return str(resolved_file)
 
 
 def normalize_file_name(file: Path) -> str:

@@ -2,6 +2,7 @@ from mcp.server.fastmcp import FastMCP
 
 from notes import create_note as create_note_file
 from notes import fetch_notes
+from notes import initialize_storage
 from notes import search_notes as search_note_files
 from notes import view_note as view_note_file
 
@@ -34,6 +35,7 @@ def view_note(identifier: str) -> dict[str, str]:
 
 
 def main():
+    initialize_storage()
     mcp.run(transport="stdio")
 
 
