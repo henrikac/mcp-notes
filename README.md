@@ -12,9 +12,10 @@ By default, notes are stored as Markdown files in:
 data/notes
 ```
 
-The server creates this directory on startup when no custom location is
-configured. Runtime note data is stored outside git, including the default
-`data/notes` directory and the local `data/storage.json` state file.
+The server creates this directory and `data/archive` on startup when no custom
+location is configured. Runtime note data is stored outside git, including the
+default `data/notes` and `data/archive` directories and the local
+`data/storage.json` state file.
 
 To store notes somewhere else, set `KNOWLEDGE_ASSISTANT_NOTES_PATH` before
 starting the server:
@@ -22,6 +23,9 @@ starting the server:
 ```bash
 KNOWLEDGE_ASSISTANT_NOTES_PATH="$HOME/Notes/knowledge-assistant" uv run python src/server.py
 ```
+
+When a custom notes directory is configured, the archive directory is created
+next to it.
 
 When the configured location changes later, the server moves existing note files
 from the previous location to the new one during startup. Existing files in the
@@ -38,6 +42,11 @@ The server exposes these MCP tools:
 | `view_note(identifier)` | Returns one saved note's Markdown content. |
 | `search_notes(query)` | Searches note titles and contents. |
 | `create_note(title, content)` | Creates a new Markdown note. |
+| `append_to_note(identifier, content, heading)` | Appends Markdown content to an existing note. |
+| `update_note(identifier, content)` | Replaces an existing note's Markdown content. |
+| `archive_note(identifier)` | Moves an active note to the archive. |
+| `list_archived_notes()` | Returns an ordered list of archived notes. |
+| `restore_note(identifier)` | Moves an archived note back to active notes. |
 
 `list_notes` returns structured data with the ordered number, note title,
 filename, and relative path.
@@ -58,6 +67,18 @@ Sådan tilføjer man et MCP tool -> sådan-tilføjer-man-et-mcp-tool.md
 ```
 
 Existing notes are not overwritten.
+
+`append_to_note` resolves notes the same way as `view_note`. It appends content
+to the end of the note and can optionally insert a Markdown heading before the
+new content.
+
+`update_note` resolves notes the same way as `view_note` and replaces the full
+Markdown body while preserving the existing filename.
+
+Archived notes are excluded from `list_notes` and `search_notes`.
+`list_archived_notes` lists archived notes, and `restore_note` moves an archived
+note back to the active note directory. Archive and restore operations preserve
+existing files by adding a numeric suffix when a filename already exists.
 
 ## Requirements
 

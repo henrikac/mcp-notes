@@ -7,15 +7,17 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_PATH = PROJECT_ROOT / "data"
 DEFAULT_NOTES_PATH = DATA_PATH / "notes"
+DEFAULT_ARCHIVE_PATH = DATA_PATH / "archive"
 NOTES_PATH_ENV_VAR = "KNOWLEDGE_ASSISTANT_NOTES_PATH"
 STORAGE_STATE_PATH = DATA_PATH / "storage.json"
 NOTES_PATH = DEFAULT_NOTES_PATH
+ARCHIVE_PATH = DEFAULT_ARCHIVE_PATH
 _STORAGE_INITIALIZED = False
 
 
 def initialize_storage() -> Path:
     """Initialize note storage and migrate notes if the configured path changed."""
-    global NOTES_PATH, _STORAGE_INITIALIZED
+    global ARCHIVE_PATH, NOTES_PATH, _STORAGE_INITIALIZED
 
     configured_path = os.environ.get(NOTES_PATH_ENV_VAR, "").strip()
     desired_path = (
@@ -23,20 +25,36 @@ def initialize_storage() -> Path:
         if configured_path
         else DEFAULT_NOTES_PATH
     ).resolve()
+    desired_archive_path = (desired_path.parent / "archive").resolve()
 
-    previous_path = read_previous_notes_path()
+    previous_path, previous_archive_path = read_previous_storage_paths()
     migration_source = previous_path if previous_path != desired_path else None
+    archive_migration_source = (
+        previous_archive_path
+        if previous_archive_path != desired_archive_path
+        else None
+    )
 
     if migration_source is None and configured_path and DEFAULT_NOTES_PATH != desired_path:
         migration_source = DEFAULT_NOTES_PATH
+    if (
+        archive_migration_source is None
+        and configured_path
+        and DEFAULT_ARCHIVE_PATH != desired_archive_path
+    ):
+        archive_migration_source = DEFAULT_ARCHIVE_PATH
 
     desired_path.mkdir(parents=True, exist_ok=True)
+    desired_archive_path.mkdir(parents=True, exist_ok=True)
 
     if migration_source is not None:
         migrate_notes(migration_source, desired_path)
+    if archive_migration_source is not None:
+        migrate_notes(archive_migration_source, desired_archive_path)
 
-    write_storage_state(desired_path)
+    write_storage_state(desired_path, desired_archive_path)
     NOTES_PATH = desired_path
+    ARCHIVE_PATH = desired_archive_path
     _STORAGE_INITIALIZED = True
     return NOTES_PATH
 
@@ -78,6 +96,48 @@ def search_notes(query: str) -> list[dict[str, str]]:
     return results
 
 
+def append_to_note(
+    identifier: str,
+    content: str,
+    heading: str | None = None,
+) -> dict[str, str]:
+    """Append Markdown content to an existing note."""
+    ensure_storage()
+    if not content.strip():
+        raise ValueError("Content cannot be empty.")
+
+    note_path = require_note(identifier)
+    existing_content = note_path.read_text(encoding="utf-8").rstrip("\n")
+    append_parts = []
+
+    normalized_heading = heading.strip() if heading is not None else ""
+    if normalized_heading:
+        append_parts.append(f"## {normalized_heading}")
+
+    append_parts.append(content.rstrip())
+    appended_content = "\n\n".join(append_parts)
+
+    if existing_content:
+        new_content = f"{existing_content}\n\n{appended_content}\n"
+    else:
+        new_content = f"{appended_content}\n"
+
+    note_path.write_text(new_content, encoding="utf-8")
+    return note_metadata(note_path)
+
+
+def update_note(identifier: str, content: str) -> dict[str, str]:
+    """Replace the full Markdown content of an existing note."""
+    ensure_storage()
+    normalized_content = content.strip()
+    if not normalized_content:
+        raise ValueError("Content cannot be empty.")
+
+    note_path = require_note(identifier)
+    note_path.write_text(content.rstrip() + "\n", encoding="utf-8")
+    return note_metadata(note_path)
+
+
 def create_note(title: str, content: str) -> dict[str, str]:
     """Create a Markdown note and return its metadata."""
     ensure_storage()
@@ -95,11 +155,7 @@ def create_note(title: str, content: str) -> dict[str, str]:
 
     note_path.write_text(content.rstrip() + "\n", encoding="utf-8")
 
-    return {
-        "title": normalize_file_name(note_path),
-        "filename": filename,
-        "path": display_path(note_path),
-    }
+    return note_metadata(note_path)
 
 
 def view_note(identifier: str) -> dict[str, str]:
@@ -113,18 +169,51 @@ def view_note(identifier: str) -> dict[str, str]:
     if note_path is None:
         raise FileNotFoundError(f"Note not found: {identifier}")
 
-    return {
-        "title": normalize_file_name(note_path),
-        "filename": note_path.name,
-        "path": display_path(note_path),
-        "content": note_path.read_text(encoding="utf-8"),
-    }
+    return note_metadata(note_path) | {"content": note_path.read_text(encoding="utf-8")}
+
+
+def archive_note(identifier: str) -> dict[str, str]:
+    """Move an active note to the archive."""
+    ensure_storage()
+    note_path = require_note(identifier)
+    ARCHIVE_PATH.mkdir(parents=True, exist_ok=True)
+    archived_path = unique_target_path(ARCHIVE_PATH / note_path.name)
+    shutil.move(str(note_path), str(archived_path))
+    return note_metadata(archived_path)
+
+
+def list_archived_notes() -> list[dict[str, str | int]]:
+    """Return ordered display metadata for all archived notes."""
+    ensure_storage()
+    return [
+        {"number": index} | note_metadata(file)
+        for index, file in enumerate(archived_note_files(), start=1)
+    ]
+
+
+def restore_note(identifier: str) -> dict[str, str]:
+    """Move an archived note back to the active note directory."""
+    ensure_storage()
+    archived_path = require_archived_note(identifier)
+    NOTES_PATH.mkdir(parents=True, exist_ok=True)
+    restored_path = unique_target_path(NOTES_PATH / archived_path.name)
+    shutil.move(str(archived_path), str(restored_path))
+    return note_metadata(restored_path)
 
 
 def find_note(identifier: str) -> Path | None:
     """Find a note by list number, title, filename, filename stem, or slug."""
+    return find_note_in_files(identifier, note_files())
+
+
+def find_archived_note(identifier: str) -> Path | None:
+    """Find an archived note by list number, title, filename, stem, or slug."""
+    return find_note_in_files(identifier, archived_note_files())
+
+
+def find_note_in_files(identifier: str, files: list[Path]) -> Path | None:
+    """Find a note in a specific file list."""
     normalized_identifier = identifier.strip().lower()
-    files = note_files()
 
     if normalized_identifier.isdecimal():
         note_number = int(normalized_identifier)
@@ -145,14 +234,48 @@ def find_note(identifier: str) -> Path | None:
     return None
 
 
+def require_note(identifier: str) -> Path:
+    """Return an active note path or raise a clear error."""
+    normalized_identifier = identifier.strip()
+    if not normalized_identifier:
+        raise ValueError("Note identifier cannot be empty.")
+
+    note_path = find_note(normalized_identifier)
+    if note_path is None:
+        raise FileNotFoundError(f"Note not found: {identifier}")
+    return note_path
+
+
+def require_archived_note(identifier: str) -> Path:
+    """Return an archived note path or raise a clear error."""
+    normalized_identifier = identifier.strip()
+    if not normalized_identifier:
+        raise ValueError("Note identifier cannot be empty.")
+
+    note_path = find_archived_note(normalized_identifier)
+    if note_path is None:
+        raise FileNotFoundError(f"Archived note not found: {identifier}")
+    return note_path
+
+
 def note_files() -> list[Path]:
     """Return all note files sorted by filename."""
-    if not NOTES_PATH.exists():
+    return visible_files(NOTES_PATH)
+
+
+def archived_note_files() -> list[Path]:
+    """Return all archived note files sorted by filename."""
+    return visible_files(ARCHIVE_PATH)
+
+
+def visible_files(path: Path) -> list[Path]:
+    """Return visible files from a directory sorted by filename."""
+    if not path.exists():
         return []
 
     return [
         file
-        for file in sorted(NOTES_PATH.iterdir())
+        for file in sorted(path.iterdir())
         if file.is_file() and not file.name.startswith(".")
     ]
 
@@ -163,28 +286,41 @@ def ensure_storage() -> None:
         initialize_storage()
 
 
-def read_previous_notes_path() -> Path | None:
-    """Read the last active notes path from internal server state."""
+def read_previous_storage_paths() -> tuple[Path | None, Path | None]:
+    """Read the last active notes and archive paths from internal server state."""
     if not STORAGE_STATE_PATH.exists():
-        return None
+        return None, None
 
     try:
         state = json.loads(STORAGE_STATE_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        return None
+        return None, None
 
     notes_path = state.get("notes_path")
     if not isinstance(notes_path, str) or not notes_path.strip():
-        return None
+        return None, None
 
-    return Path(notes_path).expanduser().resolve()
+    archive_path = state.get("archive_path")
+    if isinstance(archive_path, str) and archive_path.strip():
+        resolved_archive_path = Path(archive_path).expanduser().resolve()
+    else:
+        resolved_archive_path = Path(notes_path).expanduser().resolve().parent / "archive"
+
+    return Path(notes_path).expanduser().resolve(), resolved_archive_path
 
 
-def write_storage_state(notes_path: Path) -> None:
+def write_storage_state(notes_path: Path, archive_path: Path) -> None:
     """Persist the active notes path so future starts can migrate from it."""
     DATA_PATH.mkdir(parents=True, exist_ok=True)
     STORAGE_STATE_PATH.write_text(
-        json.dumps({"notes_path": str(notes_path)}, indent=2) + "\n",
+        json.dumps(
+            {
+                "notes_path": str(notes_path),
+                "archive_path": str(archive_path),
+            },
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -222,9 +358,19 @@ def unique_target_path(target_file: Path) -> Path:
 def display_path(file: Path) -> str:
     """Return project-relative paths when possible, otherwise absolute paths."""
     resolved_file = file.resolve()
-    if resolved_file.is_relative_to(PROJECT_ROOT):
-        return str(resolved_file.relative_to(PROJECT_ROOT))
+    resolved_project_root = PROJECT_ROOT.resolve()
+    if resolved_file.is_relative_to(resolved_project_root):
+        return str(resolved_file.relative_to(resolved_project_root))
     return str(resolved_file)
+
+
+def note_metadata(file: Path) -> dict[str, str]:
+    """Return common metadata for a note file."""
+    return {
+        "title": normalize_file_name(file),
+        "filename": file.name,
+        "path": display_path(file),
+    }
 
 
 def normalize_file_name(file: Path) -> str:
