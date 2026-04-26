@@ -401,12 +401,19 @@ def find_note_in_files(identifier: str, files: list[Path]) -> Path | None:
     slug_identifier = slugify(identifier)
 
     for file in files:
-        metadata = read_note_document(file)["metadata"]
-        title = note_title(file, metadata).lower()
         filename = file.name.lower()
         stem = file.stem.lower()
 
-        if normalized_identifier in {title, filename, stem} or slug_identifier == stem:
+        if normalized_identifier in {filename, stem} or slug_identifier == stem:
+            return file
+
+        try:
+            metadata = read_note_document(file)["metadata"]
+        except ValueError:
+            continue
+        title = note_title(file, metadata).lower()
+
+        if normalized_identifier == title:
             return file
 
     return None
