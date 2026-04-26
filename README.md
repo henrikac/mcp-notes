@@ -40,7 +40,8 @@ The server exposes these MCP tools:
 | --- | --- |
 | `list_notes()` | Returns an ordered list of all saved notes. |
 | `view_note(identifier)` | Returns one saved note's Markdown content. |
-| `search_notes(query)` | Searches note titles and contents. |
+| `search_notes(query)` | Searches note titles and contents with ranked results. |
+| `recent_notes(limit)` | Returns recently modified active notes. |
 | `create_note(title, content)` | Creates a new Markdown note. |
 | `append_to_note(identifier, content, heading)` | Appends Markdown content to an existing note. |
 | `update_note(identifier, content)` | Replaces an existing note's Markdown content. |
@@ -56,7 +57,12 @@ filename stem, or slug and returns the note title, filename, relative path, and
 Markdown content.
 
 `search_notes` returns structured data with the note title, filename, relative
-path, and a short excerpt.
+path, score, and a short excerpt. Search splits multi-word queries into terms,
+prioritizes title matches over content-only matches, and ranks exact phrase
+matches higher than individual term matches.
+
+`recent_notes` returns active notes ordered by most recent modification time.
+The default limit is 10, and limits are clamped to 100.
 
 `create_note` converts the title into a lowercase kebab-case filename. For
 example:

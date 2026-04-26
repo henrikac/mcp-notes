@@ -1,6 +1,8 @@
 import json
 import os
 import shutil
+from datetime import UTC
+from datetime import datetime
 from pathlib import Path
 
 
@@ -73,27 +75,45 @@ def fetch_notes() -> list[dict[str, str | int]]:
     ]
 
 
-def search_notes(query: str) -> list[dict[str, str]]:
-    """Search note titles and contents for a case-insensitive query."""
+def search_notes(query: str) -> list[dict[str, str | int]]:
+    """Search note titles and contents with ranked results."""
     ensure_storage()
-    normalized_query = query.strip().lower()
-    if not normalized_query:
+    search_query = normalize_search_query(query)
+    if not search_query:
         return []
 
     results = []
     for file in note_files():
         content = file.read_text(encoding="utf-8")
         title = normalize_file_name(file)
+        score = search_score(title, content, search_query)
 
-        if normalized_query in title.lower() or normalized_query in content.lower():
+        if score > 0:
             results.append({
                 "title": title,
                 "filename": file.name,
                 "path": display_path(file),
-                "excerpt": extract_excerpt(content, normalized_query),
+                "score": score,
+                "excerpt": extract_search_excerpt(content, search_query),
             })
 
-    return results
+    return sorted(results, key=lambda result: (-int(result["score"]), result["title"]))
+
+
+def recent_notes(limit: int = 10) -> list[dict[str, str | int | float]]:
+    """Return active notes ordered by most recent modification time."""
+    ensure_storage()
+    clamped_limit = max(0, min(limit, 100))
+    files = sorted(
+        note_files(),
+        key=lambda file: file.stat().st_mtime,
+        reverse=True,
+    )
+
+    return [
+        {"number": index} | note_metadata(file) | modified_metadata(file)
+        for index, file in enumerate(files[:clamped_limit], start=1)
+    ]
 
 
 def append_to_note(
@@ -371,6 +391,78 @@ def note_metadata(file: Path) -> dict[str, str]:
         "filename": file.name,
         "path": display_path(file),
     }
+
+
+def modified_metadata(file: Path) -> dict[str, float | str]:
+    """Return filesystem modification time metadata for a note file."""
+    modified_timestamp = file.stat().st_mtime
+    return {
+        "modified": datetime.fromtimestamp(modified_timestamp, UTC).isoformat(),
+        "modified_timestamp": modified_timestamp,
+    }
+
+
+def normalize_search_query(query: str) -> dict[str, str | list[str]]:
+    """Normalize a search query into its phrase and unique terms."""
+    phrase = " ".join(query.strip().lower().split())
+    if not phrase:
+        return {}
+
+    terms = []
+    for term in phrase.split():
+        if term not in terms:
+            terms.append(term)
+
+    return {"phrase": phrase, "terms": terms}
+
+
+def search_score(
+    title: str,
+    content: str,
+    search_query: dict[str, str | list[str]],
+) -> int:
+    """Score a note for a normalized search query."""
+    phrase = str(search_query["phrase"])
+    terms = list(search_query["terms"])
+    normalized_title = title.lower()
+    normalized_content = content.lower()
+    score = 0
+
+    if phrase in normalized_title:
+        score += 100
+    if phrase in normalized_content:
+        score += 30
+
+    for term in terms:
+        if term in normalized_title:
+            score += 20
+        if term in normalized_content:
+            score += 5
+
+    return score
+
+
+def extract_search_excerpt(
+    content: str,
+    search_query: dict[str, str | list[str]],
+    radius: int = 80,
+) -> str:
+    """Return a short excerpt around the best content match."""
+    phrase = str(search_query["phrase"])
+    terms = list(search_query["terms"])
+    normalized_content = content.lower()
+    best_match = phrase if phrase in normalized_content else ""
+
+    if not best_match:
+        for term in terms:
+            if term in normalized_content:
+                best_match = term
+                break
+
+    if not best_match:
+        return content.strip().splitlines()[0] if content.strip() else ""
+
+    return extract_excerpt(content, best_match, radius)
 
 
 def normalize_file_name(file: Path) -> str:

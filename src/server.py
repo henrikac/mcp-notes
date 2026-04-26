@@ -6,6 +6,7 @@ from notes import create_note as create_note_file
 from notes import fetch_notes
 from notes import initialize_storage
 from notes import list_archived_notes as list_archived_note_files
+from notes import recent_notes as recent_note_files
 from notes import restore_note as restore_note_file
 from notes import search_notes as search_note_files
 from notes import update_note as update_note_file
@@ -22,9 +23,15 @@ def list_notes() -> list[dict[str, str | int]]:
 
 
 @mcp.tool()
-def search_notes(query: str) -> list[dict[str, str]]:
+def search_notes(query: str) -> list[dict[str, str | int]]:
     """Search saved notes by title and content."""
     return search_note_files(query)
+
+
+@mcp.tool()
+def recent_notes(limit: int = 10) -> list[dict[str, str | int | float]]:
+    """Gets active notes ordered by most recent modification time."""
+    return recent_note_files(limit)
 
 
 @mcp.tool()
