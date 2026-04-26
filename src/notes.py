@@ -61,17 +61,19 @@ def initialize_storage() -> Path:
     return NOTES_PATH
 
 
-def fetch_notes() -> list[dict[str, str | int]]:
+def fetch_notes(tag: str | None = None) -> list[dict[str, str | int | list[str] | dict]]:
     """Return ordered display metadata for all saved notes."""
     ensure_storage()
+    normalized_tag = normalize_tag(tag) if tag else None
+    files = [
+        file
+        for file in note_files()
+        if normalized_tag is None or normalized_tag in note_tags(file)
+    ]
+
     return [
-        {
-            "number": index,
-            "title": normalize_file_name(file),
-            "filename": file.name,
-            "path": display_path(file),
-        }
-        for index, file in enumerate(note_files(), start=1)
+        {"number": index} | note_metadata(file)
+        for index, file in enumerate(files, start=1)
     ]
 
 
@@ -84,18 +86,19 @@ def search_notes(query: str) -> list[dict[str, str | int]]:
 
     results = []
     for file in note_files():
-        content = file.read_text(encoding="utf-8")
-        title = normalize_file_name(file)
-        score = search_score(title, content, search_query)
+        document = read_note_document(file)
+        title = note_title(file, document["metadata"])
+        body = str(document["body"])
+        score = search_score(title, body, search_query)
 
         if score > 0:
-            results.append({
-                "title": title,
-                "filename": file.name,
-                "path": display_path(file),
-                "score": score,
-                "excerpt": extract_search_excerpt(content, search_query),
-            })
+            results.append(
+                note_metadata_from_metadata(file, document["metadata"])
+                | {
+                    "score": score,
+                    "excerpt": extract_search_excerpt(body, search_query),
+                }
+            )
 
     return sorted(results, key=lambda result: (-int(result["score"]), result["title"]))
 
@@ -127,7 +130,8 @@ def append_to_note(
         raise ValueError("Content cannot be empty.")
 
     note_path = require_note(identifier)
-    existing_content = note_path.read_text(encoding="utf-8").rstrip("\n")
+    document = read_note_document(note_path)
+    existing_content = str(document["body"]).rstrip("\n")
     append_parts = []
 
     normalized_heading = heading.strip() if heading is not None else ""
@@ -142,7 +146,11 @@ def append_to_note(
     else:
         new_content = f"{appended_content}\n"
 
-    note_path.write_text(new_content, encoding="utf-8")
+    metadata = dict(document["metadata"])
+    if metadata:
+        metadata["updated"] = current_date()
+
+    write_note_document(note_path, metadata, new_content)
     return note_metadata(note_path)
 
 
@@ -154,11 +162,20 @@ def update_note(identifier: str, content: str) -> dict[str, str]:
         raise ValueError("Content cannot be empty.")
 
     note_path = require_note(identifier)
-    note_path.write_text(content.rstrip() + "\n", encoding="utf-8")
+    document = read_note_document(note_path)
+    metadata = dict(document["metadata"])
+    if metadata:
+        metadata["updated"] = current_date()
+
+    write_note_document(note_path, metadata, content.rstrip() + "\n")
     return note_metadata(note_path)
 
 
-def create_note(title: str, content: str) -> dict[str, str]:
+def create_note(
+    title: str,
+    content: str,
+    tags: list[str] | None = None,
+) -> dict[str, str | list[str] | dict]:
     """Create a Markdown note and return its metadata."""
     ensure_storage()
     normalized_title = title.strip()
@@ -173,12 +190,23 @@ def create_note(title: str, content: str) -> dict[str, str]:
     if note_path.exists():
         raise FileExistsError(f"Note already exists: {filename}")
 
-    note_path.write_text(content.rstrip() + "\n", encoding="utf-8")
+    normalized_tags = normalize_tags(tags or [])
+    metadata = {}
+    if normalized_tags:
+        today = current_date()
+        metadata = {
+            "title": normalized_title,
+            "created": today,
+            "updated": today,
+            "tags": normalized_tags,
+        }
+
+    write_note_document(note_path, metadata, content.rstrip() + "\n")
 
     return note_metadata(note_path)
 
 
-def view_note(identifier: str) -> dict[str, str]:
+def view_note(identifier: str) -> dict[str, str | list[str] | dict]:
     """Return a saved note's metadata and Markdown content."""
     ensure_storage()
     normalized_identifier = identifier.strip()
@@ -189,7 +217,26 @@ def view_note(identifier: str) -> dict[str, str]:
     if note_path is None:
         raise FileNotFoundError(f"Note not found: {identifier}")
 
-    return note_metadata(note_path) | {"content": note_path.read_text(encoding="utf-8")}
+    document = read_note_document(note_path)
+    return note_metadata_from_metadata(note_path, document["metadata"]) | {
+        "content": document["raw"],
+        "body": document["body"],
+    }
+
+
+def list_tags() -> list[dict[str, str | int]]:
+    """Return normalized tags with active note counts."""
+    ensure_storage()
+    tag_counts: dict[str, int] = {}
+
+    for file in note_files():
+        for tag in note_tags(file):
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+
+    return [
+        {"tag": tag, "count": count}
+        for tag, count in sorted(tag_counts.items())
+    ]
 
 
 def archive_note(identifier: str) -> dict[str, str]:
@@ -386,11 +433,204 @@ def display_path(file: Path) -> str:
 
 def note_metadata(file: Path) -> dict[str, str]:
     """Return common metadata for a note file."""
-    return {
-        "title": normalize_file_name(file),
+    metadata = read_note_document(file)["metadata"]
+    return note_metadata_from_metadata(file, metadata)
+
+
+def note_metadata_from_metadata(
+    file: Path,
+    metadata: dict[str, str | list[str]],
+) -> dict[str, str | list[str] | dict]:
+    """Return common metadata for a note file and parsed frontmatter."""
+    result = {
+        "title": note_title(file, metadata),
         "filename": file.name,
         "path": display_path(file),
     }
+
+    if metadata:
+        result["metadata"] = metadata
+
+    tags = metadata.get("tags")
+    if isinstance(tags, list):
+        result["tags"] = tags
+
+    return result
+
+
+def note_title(file: Path, metadata: dict[str, str | list[str]]) -> str:
+    """Return the frontmatter title when available, otherwise filename title."""
+    title = metadata.get("title")
+    if isinstance(title, str) and title.strip():
+        return title
+    return normalize_file_name(file)
+
+
+def note_tags(file: Path) -> list[str]:
+    """Return normalized tags for a note file."""
+    metadata = read_note_document(file)["metadata"]
+    tags = metadata.get("tags")
+    if not isinstance(tags, list):
+        return []
+    return tags
+
+
+def read_note_document(file: Path) -> dict[str, str | dict[str, str | list[str]]]:
+    """Read a note and parse optional YAML-style frontmatter."""
+    raw_content = file.read_text(encoding="utf-8")
+    metadata, body = parse_frontmatter(raw_content, file.name)
+    return {
+        "raw": raw_content,
+        "metadata": metadata,
+        "body": body,
+    }
+
+
+def write_note_document(
+    file: Path,
+    metadata: dict[str, str | list[str]],
+    body: str,
+) -> None:
+    """Write note body with optional frontmatter metadata."""
+    normalized_body = body.rstrip() + "\n"
+    if metadata:
+        file.write_text(
+            serialize_frontmatter(metadata) + "\n" + normalized_body,
+            encoding="utf-8",
+        )
+        return
+
+    file.write_text(normalized_body, encoding="utf-8")
+
+
+def parse_frontmatter(
+    content: str,
+    filename: str,
+) -> tuple[dict[str, str | list[str]], str]:
+    """Parse simple YAML-style frontmatter from a Markdown document."""
+    lines = content.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return {}, content
+
+    closing_index = None
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            closing_index = index
+            break
+
+    if closing_index is None:
+        raise ValueError(f"Malformed frontmatter in {filename}: missing closing ---")
+
+    metadata_lines = lines[1:closing_index]
+    body = "".join(lines[closing_index + 1 :])
+    if body.startswith("\r\n"):
+        body = body[2:]
+    elif body.startswith("\n"):
+        body = body[1:]
+    return parse_metadata_lines(metadata_lines, filename), body
+
+
+def parse_metadata_lines(
+    lines: list[str],
+    filename: str,
+) -> dict[str, str | list[str]]:
+    """Parse a conservative subset of YAML frontmatter."""
+    metadata: dict[str, str | list[str]] = {}
+
+    for line_number, line in enumerate(lines, start=2):
+        stripped_line = line.strip()
+        if not stripped_line:
+            continue
+        if ":" not in stripped_line:
+            raise ValueError(
+                f"Malformed frontmatter in {filename}: line {line_number}"
+            )
+
+        key, value = stripped_line.split(":", 1)
+        normalized_key = key.strip()
+        if not normalized_key:
+            raise ValueError(
+                f"Malformed frontmatter in {filename}: line {line_number}"
+            )
+
+        metadata[normalized_key] = parse_metadata_value(normalized_key, value.strip())
+
+    tags = metadata.get("tags")
+    if isinstance(tags, list):
+        metadata["tags"] = normalize_tags(tags)
+
+    return metadata
+
+
+def parse_metadata_value(key: str, value: str) -> str | list[str]:
+    """Parse a simple frontmatter scalar or inline list value."""
+    if key == "tags":
+        return parse_tags_value(value)
+    return value.strip("\"'")
+
+
+def parse_tags_value(value: str) -> list[str]:
+    """Parse tags from an inline YAML-style list or comma-separated string."""
+    if not value:
+        return []
+
+    normalized_value = value.strip()
+    if normalized_value.startswith("["):
+        if not normalized_value.endswith("]"):
+            raise ValueError("Malformed frontmatter tags: missing closing ]")
+        normalized_value = normalized_value[1:-1]
+
+    return [
+        item.strip().strip("\"'")
+        for item in normalized_value.split(",")
+        if item.strip().strip("\"'")
+    ]
+
+
+def serialize_frontmatter(metadata: dict[str, str | list[str]]) -> str:
+    """Serialize simple metadata as YAML-style frontmatter."""
+    lines = ["---"]
+    preferred_keys = ["title", "created", "updated", "tags"]
+    ordered_keys = preferred_keys + [
+        key for key in sorted(metadata) if key not in preferred_keys
+    ]
+
+    for key in ordered_keys:
+        if key not in metadata:
+            continue
+
+        value = metadata[key]
+        if isinstance(value, list):
+            serialized_value = "[" + ", ".join(value) + "]"
+        else:
+            serialized_value = str(value)
+        lines.append(f"{key}: {serialized_value}")
+
+    lines.append("---")
+    return "\n".join(lines) + "\n"
+
+
+def normalize_tags(tags: list[str]) -> list[str]:
+    """Normalize, deduplicate, and sort tag values."""
+    normalized_tags = []
+    for tag in tags:
+        normalized_tag = normalize_tag(tag)
+        if normalized_tag and normalized_tag not in normalized_tags:
+            normalized_tags.append(normalized_tag)
+    return sorted(normalized_tags)
+
+
+def normalize_tag(tag: str) -> str:
+    """Convert a tag into a lowercase slug-like value."""
+    try:
+        return slugify(tag)
+    except ValueError:
+        return ""
+
+
+def current_date() -> str:
+    """Return the current UTC date for note metadata."""
+    return datetime.now(UTC).date().isoformat()
 
 
 def modified_metadata(file: Path) -> dict[str, float | str]:

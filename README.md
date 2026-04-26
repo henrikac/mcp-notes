@@ -39,10 +39,12 @@ The server exposes these MCP tools:
 | Tool | Description |
 | --- | --- |
 | `list_notes()` | Returns an ordered list of all saved notes. |
+| `list_notes(tag)` | Returns active notes filtered by a normalized tag. |
+| `list_tags()` | Returns normalized tags with active note counts. |
 | `view_note(identifier)` | Returns one saved note's Markdown content. |
 | `search_notes(query)` | Searches note titles and contents with ranked results. |
 | `recent_notes(limit)` | Returns recently modified active notes. |
-| `create_note(title, content)` | Creates a new Markdown note. |
+| `create_note(title, content, tags)` | Creates a new Markdown note. |
 | `append_to_note(identifier, content, heading)` | Appends Markdown content to an existing note. |
 | `update_note(identifier, content)` | Replaces an existing note's Markdown content. |
 | `archive_note(identifier)` | Moves an active note to the archive. |
@@ -50,11 +52,14 @@ The server exposes these MCP tools:
 | `restore_note(identifier)` | Moves an archived note back to active notes. |
 
 `list_notes` returns structured data with the ordered number, note title,
-filename, and relative path.
+filename, relative path, and tags when present. Pass `tag` to filter active
+notes by exact normalized tag.
+
+`list_tags` returns normalized tags with active note counts.
 
 `view_note` accepts the note number from `list_notes`, a note title, filename,
-filename stem, or slug and returns the note title, filename, relative path, and
-Markdown content.
+filename stem, or slug and returns the note title, filename, relative path,
+Markdown content, body content, and parsed metadata when frontmatter exists.
 
 `search_notes` returns structured data with the note title, filename, relative
 path, score, and a short excerpt. Search splits multi-word queries into terms,
@@ -74,12 +79,31 @@ Sådan tilføjer man et MCP tool -> sådan-tilføjer-man-et-mcp-tool.md
 
 Existing notes are not overwritten.
 
+When `tags` are provided, `create_note` stores them in YAML-style frontmatter
+with `title`, `created`, and `updated` metadata. Tags are normalized to
+lowercase slug-like values and duplicate tags are removed. Existing notes
+without frontmatter remain valid.
+
+Notes can also contain hand-written frontmatter:
+
+```markdown
+---
+title: Symfony Messenger
+created: 2026-04-26
+updated: 2026-04-26
+tags: [symfony, queues, php]
+---
+
+Content...
+```
+
 `append_to_note` resolves notes the same way as `view_note`. It appends content
 to the end of the note and can optionally insert a Markdown heading before the
-new content.
+new content. If the note has frontmatter, `updated` is refreshed.
 
 `update_note` resolves notes the same way as `view_note` and replaces the full
-Markdown body while preserving the existing filename.
+Markdown body while preserving the existing filename. If the note has
+frontmatter, `updated` is refreshed.
 
 Archived notes are excluded from `list_notes` and `search_notes`.
 `list_archived_notes` lists archived notes, and `restore_note` moves an archived

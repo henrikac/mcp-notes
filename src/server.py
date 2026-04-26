@@ -6,6 +6,7 @@ from notes import create_note as create_note_file
 from notes import fetch_notes
 from notes import initialize_storage
 from notes import list_archived_notes as list_archived_note_files
+from notes import list_tags as list_note_tags
 from notes import recent_notes as recent_note_files
 from notes import restore_note as restore_note_file
 from notes import search_notes as search_note_files
@@ -17,9 +18,15 @@ mcp = FastMCP("knowledge-assistant")
 
 
 @mcp.tool()
-def list_notes() -> list[dict[str, str | int]]:
+def list_notes(tag: str | None = None) -> list[dict[str, str | int | list[str] | dict]]:
     """Gets an ordered list of saved notes."""
-    return fetch_notes()
+    return fetch_notes(tag)
+
+
+@mcp.tool()
+def list_tags() -> list[dict[str, str | int]]:
+    """Gets normalized tags with active note counts."""
+    return list_note_tags()
 
 
 @mcp.tool()
@@ -51,13 +58,17 @@ def update_note(identifier: str, content: str) -> dict[str, str]:
 
 
 @mcp.tool()
-def create_note(title: str, content: str) -> dict[str, str]:
+def create_note(
+    title: str,
+    content: str,
+    tags: list[str] | None = None,
+) -> dict[str, str | list[str] | dict]:
     """Create a new Markdown note from a title and content."""
-    return create_note_file(title, content)
+    return create_note_file(title, content, tags)
 
 
 @mcp.tool()
-def view_note(identifier: str) -> dict[str, str]:
+def view_note(identifier: str) -> dict[str, str | list[str] | dict]:
     """View a saved note by list number, title, filename, filename stem, or slug."""
     return view_note_file(identifier)
 
