@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 from datetime import UTC
 from datetime import datetime
@@ -15,6 +16,38 @@ STORAGE_STATE_PATH = DATA_PATH / "storage.json"
 NOTES_PATH = DEFAULT_NOTES_PATH
 ARCHIVE_PATH = DEFAULT_ARCHIVE_PATH
 _STORAGE_INITIALIZED = False
+STOP_WORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "det",
+    "der",
+    "en",
+    "er",
+    "for",
+    "fra",
+    "i",
+    "in",
+    "is",
+    "it",
+    "med",
+    "of",
+    "og",
+    "on",
+    "or",
+    "på",
+    "som",
+    "the",
+    "til",
+    "to",
+    "with",
+}
+WIKI_LINK_PATTERN = re.compile(r"\[\[([^\[\]]+)\]\]")
 
 
 def initialize_storage() -> Path:
@@ -239,6 +272,83 @@ def list_tags() -> list[dict[str, str | int]]:
     ]
 
 
+def backlinks(identifier: str) -> list[dict[str, str | list[str] | dict]]:
+    """Return active notes that link to the target note with wiki-links."""
+    ensure_storage()
+    target_path = require_note(identifier)
+    results = []
+
+    for file in note_files():
+        if file == target_path:
+            continue
+
+        document = read_note_document(file)
+        body = str(document["body"])
+        matching_link = first_link_to_target(body, target_path)
+        if matching_link is None:
+            continue
+
+        results.append(
+            note_metadata_from_metadata(file, document["metadata"])
+            | {"excerpt": extract_excerpt(body, matching_link.lower())}
+        )
+
+    return results
+
+
+def find_related_notes(
+    identifier: str,
+    limit: int = 5,
+) -> list[dict[str, str | int | float | list[str] | dict]]:
+    """Return active notes that are likely related to the source note."""
+    ensure_storage()
+    source_path = require_note(identifier)
+    source_document = read_note_document(source_path)
+    source_body = str(source_document["body"])
+    source_metadata = source_document["metadata"]
+    source_terms = related_terms(source_path, source_metadata, source_body)
+    source_tags = set(note_tags(source_path))
+    source_outgoing_paths = linked_note_paths(source_body)
+    clamped_limit = max(0, min(limit, 100))
+    related = []
+
+    for file in note_files():
+        if file == source_path:
+            continue
+
+        document = read_note_document(file)
+        body = str(document["body"])
+        metadata = document["metadata"]
+        candidate_terms = related_terms(file, metadata, body)
+        shared_terms = source_terms & candidate_terms
+        shared_tags = source_tags & set(note_tags(file))
+        candidate_outgoing_paths = linked_note_paths(body)
+        has_link_relationship = (
+            file in source_outgoing_paths or source_path in candidate_outgoing_paths
+        )
+
+        score = float(len(shared_terms))
+        score += len(shared_tags) * 10
+        if has_link_relationship:
+            score += 25
+
+        if score <= 0:
+            continue
+
+        related.append(
+            note_metadata_from_metadata(file, metadata)
+            | {
+                "score": score,
+                "reason": related_reason(shared_terms, shared_tags, has_link_relationship),
+            }
+        )
+
+    return sorted(
+        related,
+        key=lambda result: (-float(result["score"]), str(result["title"])),
+    )[:clamped_limit]
+
+
 def archive_note(identifier: str) -> dict[str, str]:
     """Move an active note to the archive."""
     ensure_storage()
@@ -291,7 +401,8 @@ def find_note_in_files(identifier: str, files: list[Path]) -> Path | None:
     slug_identifier = slugify(identifier)
 
     for file in files:
-        title = normalize_file_name(file).lower()
+        metadata = read_note_document(file)["metadata"]
+        title = note_title(file, metadata).lower()
         filename = file.name.lower()
         stem = file.stem.lower()
 
@@ -631,6 +742,72 @@ def normalize_tag(tag: str) -> str:
 def current_date() -> str:
     """Return the current UTC date for note metadata."""
     return datetime.now(UTC).date().isoformat()
+
+
+def extract_wiki_links(content: str) -> list[str]:
+    """Return wiki-link labels from Markdown content."""
+    return [
+        match.group(1).strip()
+        for match in WIKI_LINK_PATTERN.finditer(content)
+        if match.group(1).strip()
+    ]
+
+
+def first_link_to_target(content: str, target_path: Path) -> str | None:
+    """Return the first wiki-link label that resolves to a target note."""
+    for link_text in extract_wiki_links(content):
+        linked_path = find_note_from_link(link_text)
+        if linked_path == target_path:
+            return link_text
+    return None
+
+
+def linked_note_paths(content: str) -> set[Path]:
+    """Return active notes resolved from wiki-links in Markdown content."""
+    paths = set()
+    for link_text in extract_wiki_links(content):
+        linked_path = find_note_from_link(link_text)
+        if linked_path is not None:
+            paths.add(linked_path)
+    return paths
+
+
+def find_note_from_link(link_text: str) -> Path | None:
+    """Resolve a wiki-link label without failing on invalid labels."""
+    try:
+        return find_note(link_text)
+    except ValueError:
+        return None
+
+
+def related_terms(
+    file: Path,
+    metadata: dict[str, str | list[str]],
+    body: str,
+) -> set[str]:
+    """Return normalized non-stopword terms for related-note matching."""
+    text = f"{note_title(file, metadata)} {body}"
+    return {
+        term
+        for term in re.findall(r"[\w]+", text.lower())
+        if len(term) > 2 and term not in STOP_WORDS
+    }
+
+
+def related_reason(
+    shared_terms: set[str],
+    shared_tags: set[str],
+    has_link_relationship: bool,
+) -> str:
+    """Return a short deterministic explanation for a related-note score."""
+    reasons = []
+    if shared_tags:
+        reasons.append("shared tags: " + ", ".join(sorted(shared_tags)[:3]))
+    if has_link_relationship:
+        reasons.append("wiki-link relationship")
+    if shared_terms:
+        reasons.append("shared terms: " + ", ".join(sorted(shared_terms)[:3]))
+    return "; ".join(reasons)
 
 
 def modified_metadata(file: Path) -> dict[str, float | str]:

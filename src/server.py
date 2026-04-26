@@ -2,7 +2,9 @@ from mcp.server.fastmcp import FastMCP
 
 from notes import append_to_note as append_to_note_file
 from notes import archive_note as archive_note_file
+from notes import backlinks as note_backlinks
 from notes import create_note as create_note_file
+from notes import find_related_notes as related_note_files
 from notes import fetch_notes
 from notes import initialize_storage
 from notes import list_archived_notes as list_archived_note_files
@@ -39,6 +41,21 @@ def search_notes(query: str) -> list[dict[str, str | int]]:
 def recent_notes(limit: int = 10) -> list[dict[str, str | int | float]]:
     """Gets active notes ordered by most recent modification time."""
     return recent_note_files(limit)
+
+
+@mcp.tool()
+def backlinks(identifier: str) -> list[dict[str, str | list[str] | dict]]:
+    """Find active notes that link to a note with wiki-links."""
+    return note_backlinks(identifier)
+
+
+@mcp.tool()
+def find_related_notes(
+    identifier: str,
+    limit: int = 5,
+) -> list[dict[str, str | int | float | list[str] | dict]]:
+    """Find active notes that are likely related to a note."""
+    return related_note_files(identifier, limit)
 
 
 @mcp.tool()

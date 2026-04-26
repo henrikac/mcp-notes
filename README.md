@@ -44,6 +44,8 @@ The server exposes these MCP tools:
 | `view_note(identifier)` | Returns one saved note's Markdown content. |
 | `search_notes(query)` | Searches note titles and contents with ranked results. |
 | `recent_notes(limit)` | Returns recently modified active notes. |
+| `backlinks(identifier)` | Returns active notes that link to a note with wiki-links. |
+| `find_related_notes(identifier, limit)` | Returns active notes that are likely related to a note. |
 | `create_note(title, content, tags)` | Creates a new Markdown note. |
 | `append_to_note(identifier, content, heading)` | Appends Markdown content to an existing note. |
 | `update_note(identifier, content)` | Replaces an existing note's Markdown content. |
@@ -68,6 +70,20 @@ matches higher than individual term matches.
 
 `recent_notes` returns active notes ordered by most recent modification time.
 The default limit is 10, and limits are clamped to 100.
+
+Use wiki-style links to connect notes inside Markdown content:
+
+```markdown
+See also [[Symfony Messenger]] and [[symfony-cache]].
+```
+
+`backlinks` resolves the target note the same way as `view_note`, scans active
+notes for wiki-links that point to it, and returns source note metadata with a
+short excerpt. Archived notes are ignored.
+
+`find_related_notes` returns ranked active notes related to a source note. The
+initial deterministic heuristic scores shared title/body terms, overlapping
+tags, and wiki-link relationships. The source note itself is never returned.
 
 `create_note` converts the title into a lowercase kebab-case filename. For
 example:
